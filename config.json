@@ -1,0 +1,35 @@
+{
+    "data": {
+        "data_prefix": "./data/build"
+    },
+    "solver": {
+        "base_lr": 1.0,
+        "max_iter": 2000000,
+        "test_interval": 100,
+        "test_iter": 5,
+        "random_seed": 22,
+        "clip_gradients": 0.24,
+        "gamma": 0.8,
+        "stepsize": 100000,
+        "weights": ""
+    },
+    "logging": {
+        "display": 20,
+        "snapshot_prefix": "/shared/u/hdd/snapshots/mt",
+        "snapshot_interval": 10000,
+        "graph_prefix": "/deep/u/stewartr/snapshots/mt",
+        "graph_interval": 1000
+    },
+    "net": {
+        "init_range": 0.1,
+        "max_len": 25,
+        "mem_cells": 250,
+        "dropout_ratio": 0.15,
+        "deploy_batch_size": 300,
+        "vocab_size": 10000,
+        "batch_size": 32,
+        "pad_symbol": 2,
+        "eos_symbol": 1,
+        "unknown_symbol": 0
+    }
+}
