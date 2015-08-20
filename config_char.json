@@ -1,6 +1,6 @@
 {
     "data": {
-        "data_prefix": "./data/build",
+        "data_prefix": "./char_data/build",
         "data_source": "train.es.idx",
         "data_target": "train.en.idx",
         "char_vocab": false
@@ -17,7 +17,7 @@
         "weights": ""
     },
     "logging": {
-        "split_output": " ",
+        "split_output": "",
         "display": 20,
         "snapshot_prefix": "/shared/u/hdd/snapshots/mt",
         "snapshot_interval": 10000,
@@ -26,12 +26,12 @@
     },
     "net": {
         "init_range": 0.1,
-        "s_max_len": 20,
-        "t_max_len": 10,
-        "mem_cells": 1000,
+        "s_max_len": 100,
+        "t_max_len": 100,
+        "mem_cells": 250,
         "dropout_ratio": 0.15,
         "deploy_batch_size": 300,
-        "vocab_size": 10000,
+        "vocab_size": 256,
         "batch_size": 32,
         "pad_symbol": 2,
         "eos_symbol": 1,

@@ -11,6 +11,7 @@ target:  the 22nd meeting , on 25 october , the secretary of the committee drew 
 """
 import numpy as np
 import json
+import random
 import apollocaffe
 from apollocaffe.layers import (Concat, LstmUnit, Dropout, Wordvec, NumpyData,
     Softmax, SoftmaxWithLoss, Filler, CapSequence, InnerProduct)
@@ -18,18 +19,28 @@ from apollocaffe.layers import (Concat, LstmUnit, Dropout, Wordvec, NumpyData,
 
 def get_data(data_config):
     # You can download this file with ...
-    en_source = "%s/train.en.idx" % data_config["data_prefix"]
-    es_source = "%s/train.es.idx" % data_config["data_prefix"]
+    source = "%s/%s" % (data_config["data_prefix"], data_config["data_source"])
+    target = "%s/%s" % (data_config["data_prefix"], data_config["data_target"])
     epoch = 0
     while True:
-        with open(es_source, 'r') as f1:
-            with open(en_source, 'r') as f2:
-                for x, y in zip(f1.readlines(), f2.readlines()):
+        with open(source, 'r') as f1:
+            with open(target, 'r') as f2:
+                l = zip(f1.readlines(), f2.readlines())
+                random.shuffle(l)
+                for x, y in l:
                     x_processed = map(int, x.strip().split(' '))
                     y_processed = map(int, y.strip().split(' '))
                     yield (x_processed, y_processed)
         print("epoch %s finished" % epoch)
         epoch += 1
+
+def unpad(sentence, net_config):
+    result = []
+    for x in sentence:
+        if x == net_config["eos_symbol"]:
+            break
+        result.append(x)
+    return result
 
 def padded_reverse(sentence, net_config):
     try:
@@ -39,15 +50,15 @@ def padded_reverse(sentence, net_config):
     return result
     
 def pad_batch(sentence_batch, net_config):
-    source_len = min(max(len(x) for x, y in sentence_batch), net_config["max_len"])
-    target_len = min(max(len(y) for x, y in sentence_batch), net_config["max_len"])
+    source_len = min(max(len(x) for x, y in sentence_batch), net_config["s_max_len"])
+    target_len = min(max(len(y) for x, y in sentence_batch), net_config["t_max_len"])
     f_result = []
     b_result = []
     for x, y in sentence_batch:
         x_clip = x[:source_len]
         y_clip = y[:target_len]
-        f_result.append(x_clip + [net_config["pad_symbol"]] * (source_len - len(x_clip)))
-        b_result.append(y_clip[::-1] + [net_config["pad_symbol"]] * (target_len - len(y_clip)))
+        f_result.append(x_clip[::-1] + [net_config["pad_symbol"]] * (source_len - len(x_clip)))
+        b_result.append(y_clip + [net_config["pad_symbol"]] * (target_len - len(y_clip)))
     return np.array(f_result), np.array(b_result)
     
 def get_data_batch(config):
@@ -90,7 +101,12 @@ def lstm_layers(name, mem_cells, step, batch_size, bottoms,
             tops=[name + ":dropout%d" % step]))
     return layers
 
-def forward(net, net_config, sentence_batches):
+def softmax_choice(data):
+    probs = data.flatten().astype(np.float64)
+    probs /= probs.sum()
+    return np.random.choice(range(len(probs)), p=probs)
+
+def forward(net, net_config, sentence_batches, deploy=False):
     net.clear_forward()
     source_batch, target_batch = next(sentence_batches)
 
@@ -98,7 +114,7 @@ def forward(net, net_config, sentence_batches):
     net.f(NumpyData("source_lstm_seed",
         data=np.zeros((net_config["batch_size"], net_config["mem_cells"]))))
     hidden_bottoms = ["source_lstm:seed"]
-    lengths = [min(len([1 for token in x if token != net_config["pad_symbol"]]), net_config["max_len"]) for x in source_batch]
+    lengths = [min(len([1 for token in x if token != net_config["pad_symbol"]]), net_config["s_max_len"]) for x in source_batch]
     for step in range(source_batch.shape[1]):
         s = str(step)
         word = source_batch[:, step]
@@ -126,7 +142,11 @@ def forward(net, net_config, sentence_batches):
         if step == 0:
             word = np.zeros((net_config["batch_size"], 1))
         else:
-            word = target_batch[:, step - 1]
+            if deploy:
+                top = 'softmax%d' % (step - 1)
+                word = [[softmax_choice(x)] for x in net.blobs[top].data]
+            else:
+                word = target_batch[:, step - 1]
         net.f(NumpyData("target_word" + s, word))
         net.f(Wordvec("target_wordvec" + s, net_config["mem_cells"],
             net_config["vocab_size"], bottoms=["target_word" + s],
@@ -144,12 +164,37 @@ def forward(net, net_config, sentence_batches):
         net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
             param_names=["ip_weight", "ip_bias"],
             num_output=net_config["vocab_size"], weight_filler=filler))
-        loss.append(net.f(SoftmaxWithLoss("softmax_loss" + s,
+        loss.append(net.f(SoftmaxWithLoss("softmax_loss" + s, ignore_label=net_config["pad_symbol"],
             bottoms=["ip" + s, "label" + s])))
         loss.append(net.f(Softmax("softmax" + s,
             bottoms=["ip" + s])))
     return np.mean(loss)
 
+def load_vocab(config):
+    if config["data"]["char_vocab"]:
+        t_vocab = {chr(i): i for i in range(256)}
+        s_vocab = {chr(i): i for i in range(256)}
+        t_ivocab = {i: chr(i) for i in range(256)}
+        s_ivocab = {i: chr(i) for i in range(256)}
+    else:
+        data_config = config["data"]
+        import pickle
+        with open("%s/vocab.en.pkl" % data_config["data_prefix"], 'r') as f:
+            t_vocab = pickle.load(f)
+        with open("%s/ivocab.en.pkl" % data_config["data_prefix"], 'r') as f:
+            t_ivocab = pickle.load(f)
+            t_ivocab[0] = "UNK"
+            t_ivocab[1] = "EOS"
+            t_ivocab[2] = "PAD"
+        with open("%s/vocab.es.pkl" % data_config["data_prefix"], 'r') as f:
+            s_vocab = pickle.load(f)
+        with open("%s/ivocab.es.pkl" % data_config["data_prefix"], 'r') as f:
+            s_ivocab = pickle.load(f)
+            s_ivocab[0] = "UNK"
+            s_ivocab[1] = "EOS"
+            s_ivocab[2] = "PAD"
+
+    return s_vocab, s_ivocab, t_vocab, t_ivocab
 def train(config):
     net = apollocaffe.ApolloNet()
 
@@ -161,25 +206,9 @@ def train(config):
     if solver["weights"]:
         net.load(solver["weights"])
     train_loss_hist = []
-    net.draw_to_file("/tmp/mt.jpg")
+    #net.draw_to_file("/tmp/mt.jpg")
 
-    #data_prefix = "./build"
-    data_config = config["data"]
-    import pickle
-    with open("%s/vocab.en.pkl" % data_config["data_prefix"], 'r') as f:
-        t_vocab = pickle.load(f)
-    with open("%s/ivocab.en.pkl" % data_config["data_prefix"], 'r') as f:
-        t_ivocab = pickle.load(f)
-        t_ivocab[0] = "UNK"
-        t_ivocab[1] = "EOS"
-        t_ivocab[2] = "PAD"
-    with open("%s/vocab.es.pkl" % data_config["data_prefix"], 'r') as f:
-        s_vocab = pickle.load(f)
-    with open("%s/ivocab.es.pkl" % data_config["data_prefix"], 'r') as f:
-        s_ivocab = pickle.load(f)
-        s_ivocab[0] = "UNK"
-        s_ivocab[1] = "EOS"
-        s_ivocab[2] = "PAD"
+    s_vocab, s_ivocab, t_vocab, t_ivocab = load_vocab(config)
 
     logging = config["logging"]
     loggers = [
@@ -188,29 +217,38 @@ def train(config):
         apollocaffe.loggers.SnapshotLogger(logging["snapshot_interval"],
             logging["snapshot_prefix"]),
         ]
-    for i in range(solver["max_iter"]):
+    for i in range(solver['start_iter'], solver["max_iter"]):
         train_loss_hist.append(forward(net, net_config, sentence_batches))
         net.backward()
         lr = (solver["base_lr"] * (solver["gamma"])**(i // solver["stepsize"]))
         net.update(lr=lr, clip_gradients=solver["clip_gradients"])
         if i % logging["display"] == 0:
+            forward(net, net_config, sentence_batches, deploy=True)
             print("Iteration %d: %s" % (i, np.mean(train_loss_hist[-logging["display"]:])))
             output = []
             target = []
             source = []
-            for step in range(net_config["max_len"]):
+            for step in range(net_config["s_max_len"]):
                 try:
-                    output.append(np.argmax(net.blobs["softmax%d" % step].data[0].flatten()))
-                    target.append(np.int(net.blobs["target_word%d" % step].data[0].flatten()))
                     source.append(int(net.blobs["source_word%d" % step].data[0].flatten()[0]))
                 except:
                     break
-            print("input:\t" + ' '.join(
-                s_ivocab[x] for x in source))
-            print("output:\t" + ' '.join(
-                t_ivocab[x] for x in padded_reverse(output, net_config)))
-            print("target:\t" + ' '.join(
-                t_ivocab[x] for x in padded_reverse(target, net_config)))
+            for step in range(net_config["t_max_len"]):
+                try:
+                    output.append(np.argmax(net.blobs["softmax%d" % step].data[0].flatten()))
+                    target.append(np.int(net.blobs["label%d" % step].data[0].flatten()))
+                except:
+                    break
+            try:
+                char = str(logging["split_output"])
+                print("input:\t" + char.join(
+                    s_ivocab[x] for x in padded_reverse(source, net_config)))
+                print("output:\t" + char.join(
+                    t_ivocab[x] for x in unpad(output, net_config)))
+                print("target:\t" + char.join(
+                    t_ivocab[x] for x in unpad(target, net_config)))
+            except Exception as e:
+                print e
         for logger in loggers:
             logger.log(i, {"train_loss": train_loss_hist,
                 "apollo_net": net, "start_iter": 0})
@@ -222,6 +260,7 @@ def main():
     config = json.load(open(args.config, 'r'))
     if args.weights:
         config["solver"]["weights"] = args.weights
+    config["solver"]["start_iter"] = args.start_iter
 
     apollocaffe.set_random_seed(config["solver"]["random_seed"])
     apollocaffe.set_device(args.gpu)
