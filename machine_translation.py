@@ -26,8 +26,12 @@ def get_data(data_config):
         with open(source, 'r') as f1:
             with open(target, 'r') as f2:
                 l = zip(f1.readlines(), f2.readlines())
+                if "data_samples" in data_config:
+                    l = l[:data_config["data_samples"]]
                 random.shuffle(l)
                 for x, y in l:
+                    if len(x.strip()) == 0 or len(y.strip()) == 0:
+                        continue
                     x_processed = map(int, x.strip().split(' '))
                     y_processed = map(int, y.strip().split(' '))
                     yield (x_processed, y_processed)
@@ -171,28 +175,39 @@ def forward(net, net_config, sentence_batches, deploy=False):
     return np.mean(loss)
 
 def load_vocab(config):
-    if config["data"]["char_vocab"]:
-        t_vocab = {chr(i): i for i in range(256)}
-        s_vocab = {chr(i): i for i in range(256)}
-        t_ivocab = {i: chr(i) for i in range(256)}
-        s_ivocab = {i: chr(i) for i in range(256)}
-    else:
-        data_config = config["data"]
-        import pickle
-        with open("%s/vocab.en.pkl" % data_config["data_prefix"], 'r') as f:
+    data_config = config["data"]
+    import pickle
+    t_vocab = config["data"]["t_vocab"]
+    if t_vocab:
+        with open("%s/%s" % (data_config["data_prefix"], t_vocab), 'r') as f:
             t_vocab = pickle.load(f)
-        with open("%s/ivocab.en.pkl" % data_config["data_prefix"], 'r') as f:
-            t_ivocab = pickle.load(f)
-            t_ivocab[0] = "UNK"
-            t_ivocab[1] = "EOS"
-            t_ivocab[2] = "PAD"
-        with open("%s/vocab.es.pkl" % data_config["data_prefix"], 'r') as f:
+    else:
+        t_vocab = {chr(i): i for i in range(3, 256)}
+    s_vocab_file = config["data"]["s_vocab"]
+    if s_vocab_file:
+        with open("%s/%s" % (data_config["data_prefix"], s_vocab_file), 'r') as f:
             s_vocab = pickle.load(f)
-        with open("%s/ivocab.es.pkl" % data_config["data_prefix"], 'r') as f:
+    else:
+        s_vocab = {chr(i): i for i in range(3, 256)}
+    t_ivocab_file = config["data"]["t_ivocab"]
+    if t_ivocab_file:
+        with open("%s/%s" % (data_config["data_prefix"], t_ivocab_file), 'r') as f:
+            t_ivocab = pickle.load(f)
+    else:
+        t_ivocab = {i: chr(i) for i in range(3, 256)}
+    s_ivocab_file = config["data"]["s_ivocab"]
+    if s_ivocab_file:
+        with open("%s/%s" % (data_config["data_prefix"], s_ivocab_file), 'r') as f:
             s_ivocab = pickle.load(f)
-            s_ivocab[0] = "UNK"
-            s_ivocab[1] = "EOS"
-            s_ivocab[2] = "PAD"
+    else:
+        s_ivocab = {i: chr(i) for i in range(3, 256)}
+
+    for ivocab in s_ivocab, t_ivocab:
+        assert 1 not in ivocab
+        assert 2 not in ivocab
+        ivocab[0] = "UNK"
+        ivocab[1] = "EOS"
+        ivocab[2] = "PAD"
 
     return s_vocab, s_ivocab, t_vocab, t_ivocab
 def train(config):
@@ -222,6 +237,9 @@ def train(config):
         net.backward()
         lr = (solver["base_lr"] * (solver["gamma"])**(i // solver["stepsize"]))
         net.update(lr=lr, clip_gradients=solver["clip_gradients"])
+        if i > 2000 and i % 3000 == 0:
+            config["net"]["s_max_len"] += 1
+            config["net"]["t_max_len"] += 1
         if i % logging["display"] == 0:
             forward(net, net_config, sentence_batches, deploy=True)
             print("Iteration %d: %s" % (i, np.mean(train_loss_hist[-logging["display"]:])))

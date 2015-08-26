@@ -3,7 +3,10 @@
         "data_prefix": "./data/build",
         "data_source": "train.es.idx",
         "data_target": "train.en.idx",
-        "char_vocab": false
+        "s_vocab": "vocab.es.pkl",
+        "s_ivocab": "ivocab.es.pkl",
+        "t_vocab": "vocab.en.pkl",
+        "t_ivocab": "ivocab.en.pkl"
     },
     "solver": {
         "base_lr": 1.0,
