@@ -117,8 +117,12 @@ def forward(net, net_config, sentence_batches, deploy=False):
     filler = Filler("uniform", net_config["init_range"])
     net.f(NumpyData("source_lstm_seed",
         data=np.zeros((net_config["batch_size"], net_config["mem_cells"]))))
-    hidden_bottoms = ["source_lstm:seed"]
     lengths = [min(len([1 for token in x if token != net_config["pad_symbol"]]), net_config["s_max_len"]) for x in source_batch]
+    
+    # Thang Aug15
+    softmax_bias = False
+    num_layers = 2
+    hidden_bottoms = ["source_lstm%d:seed" % (num_layers-1)]
     for step in range(source_batch.shape[1]):
         s = str(step)
         word = source_batch[:, step]
@@ -127,20 +131,27 @@ def forward(net, net_config, sentence_batches, deploy=False):
             net_config["vocab_size"], bottoms=["source_word" + s],
             param_names=["source_wordvec_param"], weight_filler=filler))
 
-        layers = lstm_layers("source_lstm0", net_config["mem_cells"],
-            step, batch_size=net_config["batch_size"], bottoms=["source_wordvec" + s],
-            init_range=net_config["init_range"])
-        layers2 = lstm_layers("source_lstm", net_config["mem_cells"],
-            step, batch_size=net_config["batch_size"], bottoms=["source_lstm0:out" + s],
-            init_range=net_config["init_range"])
-        for layer in layers + layers2:
+        # Thang Aug15
+        prev_layer_str = "source_wordvec"
+        layers = []
+        for l in xrange(num_layers):
+            next_layer_str = "source_lstm%d" % l 
+            layers += lstm_layers(next_layer_str, net_config["mem_cells"],
+                step, batch_size=net_config["batch_size"], bottoms=[prev_layer_str + s],
+                init_range=net_config["init_range"])
+            prev_layer_str = "%s:out" % next_layer_str
+
+        for layer in layers:
             net.f(layer)
-        hidden_bottoms.append("source_lstm:out%d" % step)
+
+        # Thang Aug15
+        hidden_bottoms.append("%s%d" % (prev_layer_str, step))
 
     net.f(CapSequence("hidden_seed", sequence_lengths=lengths,
         bottoms=hidden_bottoms))
     
     loss = []
+
     for step in range(target_batch.shape[1]):
         s = str(step)
         if step == 0:
@@ -165,9 +176,16 @@ def forward(net, net_config, sentence_batches, deploy=False):
 
         net.f(NumpyData("label" + s,
             data=np.reshape(target_batch[:, step], (net_config["batch_size"], 1))))
-        net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
-            param_names=["ip_weight", "ip_bias"],
-            num_output=net_config["vocab_size"], weight_filler=filler))
+
+        # Thang Aug15
+        if softmax_bias: # with bias
+          net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
+              bias_term=softmax_bias, param_names=["ip_weight", "ip_bias"],
+              num_output=net_config["vocab_size"], weight_filler=filler))
+        else: # no bias
+          net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
+              bias_term=softmax_bias, param_names=["ip_weight"],
+              num_output=net_config["vocab_size"], weight_filler=filler))
         loss.append(net.f(SoftmaxWithLoss("softmax_loss" + s, ignore_label=net_config["pad_symbol"],
             bottoms=["ip" + s, "label" + s])))
         loss.append(net.f(Softmax("softmax" + s,
