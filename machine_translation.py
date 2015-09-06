@@ -122,68 +122,96 @@ def forward(net, net_config, sentence_batches, deploy=False):
     # Thang Aug15
     softmax_bias = False
     num_layers = 2
-    hidden_bottoms = ["source_lstm%d:seed" % (num_layers-1)]
-    for step in range(source_batch.shape[1]):
-        s = str(step)
-        word = source_batch[:, step]
-        net.f(NumpyData("source_word" + s, word))
-        net.f(Wordvec("source_wordvec" + s, net_config["mem_cells"],
-            net_config["vocab_size"], bottoms=["source_word" + s],
-            param_names=["source_wordvec_param"], weight_filler=filler))
+    tgt_sos = 0
+    dropout_value = 0.15
+    hidden_bottoms = [] 
+    for l in xrange(num_layers):
+        hidden_bottoms.append(["source_lstm%d:seed" % (num_layers-1)])
 
-        # Thang Aug15
-        prev_layer_str = "source_wordvec"
+    # build encoder
+    for step in range(source_batch.shape[1]):
+        word = source_batch[:, step]
+       
+        # data
+        layer_str = "source_word%d" % step
+        net.f(NumpyData(layer_str, word))
+        prev_layer_str = layer_str
+
+        # embedding
+        layer_str = "source_wordvec%d" % step
+        net.f(Wordvec(layer_str, net_config["mem_cells"],
+            net_config["vocab_size"], bottoms=[prev_layer_str],
+            param_names=["source_wordvec_param"], weight_filler=filler))
+        prev_layer_str = layer_str
+
+        # recurrent layers
         layers = []
         for l in xrange(num_layers):
-            next_layer_str = "source_lstm%d" % l 
-            layers += lstm_layers(next_layer_str, net_config["mem_cells"],
-                step, batch_size=net_config["batch_size"], bottoms=[prev_layer_str + s],
-                init_range=net_config["init_range"])
-            prev_layer_str = "%s:out" % next_layer_str
+            layer_str = "source_lstm%d" % l 
+            layers += lstm_layers(layer_str, net_config["mem_cells"],
+                step, batch_size=net_config["batch_size"], bottoms=[prev_layer_str],
+                init_range=net_config["init_range"], dropout_ratio=dropout_value)
+            prev_layer_str = "%s:out%d" % (layer_str, step)
+            
+            hidden_bottoms[l].append(prev_layer_str)
 
         for layer in layers:
             net.f(layer)
 
-        # Thang Aug15
-        hidden_bottoms.append("%s%d" % (prev_layer_str, step))
-
-    net.f(CapSequence("hidden_seed", sequence_lengths=lengths,
-        bottoms=hidden_bottoms))
+    # cap sequence
+    for l in xrange(num_layers):
+        net.f(CapSequence("hidden_seed%d" % l, sequence_lengths=lengths,
+            bottoms=hidden_bottoms[l]))
     
-    loss = []
 
+    # decoder
+    loss = []
     for step in range(target_batch.shape[1]):
-        s = str(step)
         if step == 0:
-            word = np.zeros((net_config["batch_size"], 1))
+            word = np.ones((net_config["batch_size"], 1))*tgt_sos
         else:
             if deploy:
                 top = 'softmax%d' % (step - 1)
                 word = [[softmax_choice(x)] for x in net.blobs[top].data]
             else:
                 word = target_batch[:, step - 1]
-        net.f(NumpyData("target_word" + s, word))
-        net.f(Wordvec("target_wordvec" + s, net_config["mem_cells"],
-            net_config["vocab_size"], bottoms=["target_word" + s],
-            param_names=["target_wordvec_param"], weight_filler=filler))
+        
+        # data
+        layer_str = "target_word%d" % step
+        net.f(NumpyData(layer_str, word))
+        prev_layer_str = layer_str
 
-        layers = lstm_layers("target_lstm", net_config["mem_cells"],
-            step, batch_size=net_config["batch_size"], bottoms=["target_wordvec" + s],
-            init_range=net_config["init_range"], seed="hidden_seed",
-            dropout_ratio=0.15)
+        # embedding
+        layer_str = "target_wordvec%d" % step
+        net.f(Wordvec(layer_str, net_config["mem_cells"],
+            net_config["vocab_size"], bottoms=[prev_layer_str],
+            param_names=["target_wordvec_param"], weight_filler=filler))
+        prev_layer_str = layer_str
+
+        # recurrent layers
+        layers = []
+        for l in xrange(num_layers):
+            layer_str = "target_lstm%d" % l 
+            layers += lstm_layers(layer_str, net_config["mem_cells"],
+                step, batch_size=net_config["batch_size"], bottoms=[prev_layer_str],
+                init_range=net_config["init_range"], seed="hidden_seed%d" % l,
+                dropout_ratio=dropout_value)
+            prev_layer_str = "%s:out%d" % (layer_str, step)
         for layer in layers:
             net.f(layer)
-
+        
+        # label layer
+        s = str(step)
         net.f(NumpyData("label" + s,
             data=np.reshape(target_batch[:, step], (net_config["batch_size"], 1))))
 
-        # Thang Aug15
+        prev_layer_str = "target_lstm%d:out%d" % (num_layers-1, step) 
         if softmax_bias: # with bias
-          net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
+          net.f(InnerProduct("ip" + s, bottoms=[prev_layer_str],
               bias_term=softmax_bias, param_names=["ip_weight", "ip_bias"],
               num_output=net_config["vocab_size"], weight_filler=filler))
         else: # no bias
-          net.f(InnerProduct("ip" + s, bottoms=["target_lstm:dropout" + s],
+          net.f(InnerProduct("ip" + s, bottoms=[prev_layer_str],
               bias_term=softmax_bias, param_names=["ip_weight"],
               num_output=net_config["vocab_size"], weight_filler=filler))
         loss.append(net.f(SoftmaxWithLoss("softmax_loss" + s, ignore_label=net_config["pad_symbol"],
@@ -239,7 +267,7 @@ def train(config):
     if solver["weights"]:
         net.load(solver["weights"])
     train_loss_hist = []
-    #net.draw_to_file("/tmp/mt.jpg")
+    net.draw_to_file("/afs/cs.stanford.edu/u/lmthang/public_html/tmp/mt.jpg")
 
     s_vocab, s_ivocab, t_vocab, t_ivocab = load_vocab(config)
 
