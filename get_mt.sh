@@ -13,7 +13,6 @@ tar xf un.en-es.tgz
 
 echo "Downloading processed data"
 
-mkdir -p data && cd data
 wget russellsstewart.com/s/mt/build.tgz
 tar -xf build.tgz
 
