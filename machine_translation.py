@@ -267,7 +267,7 @@ def train(config):
     if solver["weights"]:
         net.load(solver["weights"])
     train_loss_hist = []
-    net.draw_to_file("/afs/cs.stanford.edu/u/lmthang/public_html/tmp/mt.jpg")
+    net.draw_to_file("/tmp/mt.jpg")
 
     s_vocab, s_ivocab, t_vocab, t_ivocab = load_vocab(config)
 
